@@ -32,3 +32,13 @@ tools, e.g., `kyua report-junit`.
 ```bash
 % junitdiff --diff-level=testsuite file1.xml file2.xml
 ```
+
+### Compare Output from Two Runs of `kyua test -k /usr/tests/bin/sh/Kyuafile`
+
+```bash
+% kyua test -r results1.db -k /usr/tests/bin/sh/Kyuafile
+% kyua test -r results2.db -k /usr/tests/bin/sh/Kyuafile
+% kyua report-junit -r results1.db -o results1.xml
+% kyua report-junit -r results2.db -o results2.xml
+% junitdiff --diff-level=testcase results1.xml results2.xml
+```
