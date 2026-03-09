@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import enum
+import pathlib
 import pprint
 import sys
 import traceback
@@ -29,20 +30,57 @@ class DiffExitCode(enum.IntEnum):
 
 
 @dataclass
+class ElementKey:
+    """A representation of the name for a given element.
+
+    This object exists as a 'uniquifier' for `dict` keys.
+    """
+
+    name: str
+    classname: str | None = None
+
+    def __hash__(self) -> int:
+        """hash(..) magic method.
+
+        The order is computed this way since `self.classname` has precedence
+        over `self.name`.
+        """
+        return hash((self.classname, self.name))
+
+
+@dataclass
 class FilteredResult:
     """Provide filtered fields for `junitparser.Element` for deepdiff."""
 
-    name: list[str]
     errors: int
     failures: int
     skipped: int
     tests: int
 
 
+def element_key(elem: junitparser.Element) -> ElementKey:
+    """Build an `ElementKey` from a `junitparser.Element` object.
+
+    Args:
+        elem: a target `junitparser.Element` to build an `ElementKey` from.
+
+    Returns:
+        An `ElementKey` representing the "uniquifier
+
+    """
+    if isinstance(elem, junitparser.TestCase):
+        return ElementKey(name=elem.name, classname=elem.classname)
+    if isinstance(elem, junitparser.TestSuite):
+        return ElementKey(name=elem)
+    # ruff: noqa: SLF001
+    err_msg = f"Unsupported type: {elem._tag}"
+    raise NotImplementedError(err_msg)
+
+
 def flatten_elements(
     run_output: JUnitXml,
     junit_type: junitparser.Element,
-) -> list[junitparser.Element]:
+) -> dict[ElementKey, junitparser.Element]:
     """Flatten out elements of a particular type, `junit_type`, from `run`.
 
     Args:
@@ -50,23 +88,29 @@ def flatten_elements(
         junit_type: `Element` type to parse out, e.g., `junitparser.TestCase`.
 
     Returns:
-        A list of filtered `Elements` of a selected type.
+        A list of filtered `Elements` of a selected type, keyed by their respective
+        names.
 
     """
-    return list(run_output.iterchildren(junit_type))
+    return {
+        element_key(elem): filter_properties(elem)
+        for elem in run_output.iterchildren(junit_type)
+    }
 
 
-def filter_properties(elem: junitparser.Element) -> list[FilteredResult]:
+def filter_properties(
+    elem: junitparser.Element,
+) -> FilteredResult:
     """Filter out properties from `elem`.
 
     Args:
+        name: the "uniquifier" for `elem` (precomputed to avoid computing again).
         elem: a root element to parse results from.
 
     Returns:
         A list of filtered results.
 
     """
-    name: list[str] = []
     errors = failures = skipped = tests = 0
     if isinstance(elem, junitparser.TestCase):
         tests = 1
@@ -77,11 +121,7 @@ def filter_properties(elem: junitparser.Element) -> list[FilteredResult]:
                 failures += 1
             elif isinstance(res, junitparser.Skipped):
                 skipped += 1
-        name = [elem.name]
-        if elem.classname is None:
-            name.append(elem.classname)
     elif isinstance(elem, junitparser.TestSuite):
-        name = [elem.name]
         errors = elem.errors
         failures = elem.failures
         skipped = elem.skipped
@@ -92,7 +132,6 @@ def filter_properties(elem: junitparser.Element) -> list[FilteredResult]:
         raise NotImplementedError(err_msg)
 
     return FilteredResult(
-        name,
         errors,
         failures,
         skipped,
@@ -109,12 +148,12 @@ def _main(argv: list[str] | None = None) -> int:
         default="testcase",
         help="Level to compare from.",
     )
-    argparser.add_argument("run1_xml", type=argparse.FileType("r"))
-    argparser.add_argument("run2_xml", type=argparse.FileType("r"))
+    argparser.add_argument("run1_xml")
+    argparser.add_argument("run2_xml")
     args = argparser.parse_args(args=argv)
 
-    run1_xml = JUnitXml.fromfile(args.run1_xml)
-    run2_xml = JUnitXml.fromfile(args.run2_xml)
+    run1_xml = JUnitXml.fromstring(pathlib.Path(args.run1_xml).read_text())
+    run2_xml = JUnitXml.fromstring(pathlib.Path(args.run2_xml).read_text())
 
     if args.diff_level == "testcase":
         junit_result_type = junitparser.TestCase
@@ -124,9 +163,7 @@ def _main(argv: list[str] | None = None) -> int:
     run1_results = flatten_elements(run1_xml, junit_result_type)
     run2_results = flatten_elements(run2_xml, junit_result_type)
 
-    res1_filtered = [filter_properties(a) for a in run1_results]
-    res2_filtered = [filter_properties(b) for b in run2_results]
-    differ = deepdiff.DeepDiff(res1_filtered, res2_filtered)
+    differ = deepdiff.DeepDiff(run1_results, run2_results)
     if differ:
         print(f"Differences exist:\n{pprint.pformat(differ)}")
         return DiffExitCode.DIFF
@@ -137,12 +174,12 @@ def _main(argv: list[str] | None = None) -> int:
 def main(argv: ... = None) -> int:
     """Eponymous main (outer)."""
     try:
-        sys.exit(_main(argv=argv))
+        return _main(argv=argv)
     # ruff: noqa: BLE001
     except Exception:
         traceback.print_exc()
-        sys.exit(DiffExitCode.ERROR)
+        return DiffExitCode.ERROR
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
